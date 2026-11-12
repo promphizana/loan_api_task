@@ -4,12 +4,19 @@ from fastapi.testclient import TestClient
 import main
 
 
+def test_model_path_resolves_relative_to_app_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("MODEL_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert main.load_model()["version"] == "2026-11-05"
+
+
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.setenv("API_KEY", "test-key")
     monkeypatch.setenv("MODEL_PATH", "model/model.json")
-    with TestClient(main.app) as c:
+    with TestClient(main.app, headers={"X-API-Key": "test-key"}) as c:
         yield c
 
 
