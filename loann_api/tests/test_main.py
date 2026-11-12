@@ -7,6 +7,7 @@ import main
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GIT_SHA", raising=False)
     monkeypatch.setenv("MODEL_PATH", "model/model.json")
     with TestClient(main.app) as c:
         yield c
@@ -16,6 +17,14 @@ def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+    assert r.json()["git_sha"] == "unknown"
+
+
+def test_health_includes_git_sha(client, monkeypatch):
+    monkeypatch.setenv("GIT_SHA", "abc123")
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["git_sha"] == "abc123"
 
 
 def test_predict(client):

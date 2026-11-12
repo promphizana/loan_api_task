@@ -59,7 +59,11 @@ def log_prediction(req: PredictionRequest, probability: float, band: str) -> Non
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_version": app.state.model["version"]}
+    return {
+        "status": "ok",
+        "model_version": app.state.model["version"],
+        "git_sha": os.getenv("GIT_SHA", "unknown"),
+    }
 
 
 @app.post("/predict", response_model=PredictionResponse)
