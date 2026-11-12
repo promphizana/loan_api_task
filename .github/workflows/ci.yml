@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'push' && 'production-deploy' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,3 +27,105 @@ jobs:
           cache-dependency-path: loann_api/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: pytest
+
+  build:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute image name (lowercase, tagged with the full SHA)
+        id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: loann_api
+          file: loann_api/Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.image }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Trigger Render deploy for this exact image
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK secret is not set" >&2
+            exit 1
+          fi
+          encoded=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["IMAGE"], safe=""))')
+          code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "${RENDER_DEPLOY_HOOK}&imgURL=${encoded}" || true)
+          echo "Deploy hook responded with HTTP ${code} for ${IMAGE}"
+          if [ "$code" != "200" ]; then
+            exit 1
+          fi
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll /health until the new SHA is live
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          EXPECTED_SHA: ${{ github.sha }}
+          MERGE_TS: ${{ github.event.head_commit.timestamp }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL variable is not set" >&2
+            exit 1
+          fi
+          url="${APP_URL%/}/health"
+          start=$(date +%s)
+          deadline=$((start + 300))
+          echo "verify started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "polling $url every 10s for up to 300s, expecting git_sha=$EXPECTED_SHA"
+          last="no response yet"
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            code=$(curl --silent --max-time 15 --output body.txt \
+              --write-out '%{http_code}' "$url" || true)
+            status=$(jq -r '.status // empty' body.txt 2>/dev/null || true)
+            sha=$(jq -r '.git_sha // empty' body.txt 2>/dev/null || true)
+            last="HTTP ${code} status='${status}' git_sha='${sha}'"
+            echo "$(date -u +%H:%M:%S) saw: ${last}"
+            if [ "$code" = "200" ] && [ "$status" = "ok" ] && [ "$sha" = "$EXPECTED_SHA" ]; then
+              end=$(date +%s)
+              merge_epoch=$(date -d "$MERGE_TS" +%s)
+              secs=$((end - merge_epoch))
+              echo "verify succeeded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "merge-to-live: ${secs}s"
+              {
+                echo "merge-to-live: ${secs}s"
+                echo ""
+                echo "- merged (head commit time): ${MERGE_TS}"
+                echo "- verified git_sha: ${sha}"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "verify FAILED after 300s. Last seen: ${last}" >&2
+          echo "Last response body (first 300 chars): $(head -c 300 body.txt 2>/dev/null)" >&2
+          echo "Expected git_sha: ${EXPECTED_SHA}" >&2
+          exit 1
