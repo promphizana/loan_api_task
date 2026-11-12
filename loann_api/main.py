@@ -1,11 +1,13 @@
 import json
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from math import exp
+from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("loan-api")
@@ -13,7 +15,11 @@ logger = logging.getLogger("loan-api")
 
 def load_model() -> dict:
     """Read the model from MODEL_PATH (configurable, so the image needs no local files)."""
-    path = os.getenv("MODEL_PATH", "model/model.json")
+    base_dir = Path(__file__).resolve().parent
+    configured_path = os.getenv("MODEL_PATH", "model/model.json")
+    path = Path(configured_path).expanduser()
+    if not path.is_absolute():
+        path = (base_dir / path).resolve()
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -57,6 +63,16 @@ def log_prediction(req: PredictionRequest, probability: float, band: str) -> Non
         logger.warning("Could not log prediction to the database", exc_info=True)
 
 
+def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    expected_key = os.getenv("API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=503, detail="API key is not configured")
+    if x_api_key is None or not secrets.compare_digest(
+        x_api_key.encode("utf-8"), expected_key.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 @app.get("/health")
 def health():
     return {
@@ -66,7 +82,11 @@ def health():
     }
 
 
-@app.post("/predict", response_model=PredictionResponse)
+@app.post(
+    "/predict",
+    response_model=PredictionResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def predict(req: PredictionRequest):
     model = app.state.model
     c = model["coefficients"]
