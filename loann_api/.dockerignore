@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.env
+*.md
+compose.yaml
+Dockerfile
+Dockerfile.prod
+init.sql
+requirements-dev.txt

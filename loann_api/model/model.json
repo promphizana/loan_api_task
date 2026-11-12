@@ -1,0 +1,11 @@
+{
+  "version": "2026-11-05",
+  "description": "Demo logistic regression with hand-set coefficients (not trained on real data).",
+  "intercept": -1.2,
+  "coefficients": {
+    "amount_usd": 0.0006,
+    "term_months": 0.02,
+    "monthly_income_usd": -0.002
+  },
+  "bands": {"low_below": 0.2, "high_from": 0.5}
+}
